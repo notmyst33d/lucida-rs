@@ -1,0 +1,10 @@
+[package]
+name = "lucida-api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mailparse = "0.16.1"
+reqwest = { version = "0.12.15", features = ["json"] }
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = "1.44.1"
