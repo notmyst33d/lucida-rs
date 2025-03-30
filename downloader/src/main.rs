@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
-use lucida_api::{LucidaClient, LucidaHost, LucidaServer, LucidaService};
+use lucida_api::{LucidaClient, LucidaHost, LucidaServer, LucidaService, SearchResponse};
 use tokio::fs;
 
 #[derive(Parser)]
@@ -44,6 +44,65 @@ enum Commands {
         )]
         service: String,
     },
+    SearchAlbum {
+        #[arg(short, long, help = "Search query")]
+        query: String,
+
+        #[arg(
+            short,
+            long,
+            help = "Streaming service: qobuz, tidal, soundcloud, deezer, amazon, yandex"
+        )]
+        service: String,
+    },
+}
+
+async fn search(
+    client: &LucidaClient,
+    service: &str,
+    query: &str,
+) -> Result<SearchResponse, &'static str> {
+    let Some(service) = LucidaService::from_str(service) else {
+        return Err("Unknown service");
+    };
+    let countries = client.fetch_countries(service.clone()).await.unwrap();
+    if countries.countries.len() == 0 {
+        return Err("Service unavailable");
+    }
+    let country = countries.countries[0].code.clone();
+    Ok(client.fetch_search(service, &country, query).await.unwrap())
+}
+
+async fn download_and_save(
+    client: &LucidaClient,
+    url: &str,
+    title: &str,
+    metadata: bool,
+    current: usize,
+    total: usize,
+    append_current: bool,
+) {
+    let response = client
+        .try_download_all_countries(url, metadata, |e| {
+            println!(
+                "{} {} {} {}",
+                style("[").dim(),
+                style(format!("{current}")).bold().cyan(),
+                style(format!("/ {total} ]")).dim(),
+                style(e.replace("{item}", title)).bold()
+            )
+        })
+        .await
+        .unwrap();
+
+    let mut filename = response.filename.unwrap().replace("/", "&");
+    if append_current {
+        filename = format!("{current}. {filename}");
+    }
+
+    fs::write(filename, response.response.bytes().await.unwrap())
+        .await
+        .unwrap();
 }
 
 #[tokio::main]
@@ -68,23 +127,12 @@ async fn main() {
     };
     let client = LucidaClient::with_options(host, server);
 
-    let url = match &cli.command {
-        Commands::Rip { url } => url.to_string(),
+    match &cli.command {
+        Commands::Rip { url } => {
+            download_and_save(&client, &url, &url, cli.metadata, 1, 1, false).await
+        }
         Commands::Search { query, service } => {
-            let Some(service) = LucidaService::from_str(&service) else {
-                println!("Unknown service");
-                return;
-            };
-            let countries = client.fetch_countries(service.clone()).await.unwrap();
-            if countries.countries.len() == 0 {
-                println!("Service unavailable");
-                return;
-            }
-            let country = countries.countries[0].code.clone();
-            let response = client
-                .fetch_search(service, &country, &query)
-                .await
-                .unwrap();
+            let response = search(&client, &service, &query).await.unwrap();
             let selector: Vec<String> = response
                 .results
                 .tracks
@@ -105,25 +153,55 @@ async fn main() {
                 .items(&selector)
                 .interact()
                 .unwrap();
-            response.results.tracks[selection].url.clone()
+            download_and_save(
+                &client,
+                &response.results.tracks[selection].url,
+                &selector[selection],
+                cli.metadata,
+                1,
+                1,
+                false,
+            )
+            .await;
         }
-    };
-
-    let mut current = String::new();
-    let response = client
-        .try_download_all_countries(&url, cli.metadata, |e| {
-            if current != e {
-                current = e;
-                println!("{}", current.replace("{item}", &url));
+        Commands::SearchAlbum { query, service } => {
+            let response = search(&client, &service, &query).await.unwrap();
+            let selector: Vec<String> = response
+                .results
+                .albums
+                .iter()
+                .map(|v| {
+                    format!(
+                        "{} {} {}",
+                        style(&v.title).bold(),
+                        style("-").dim(),
+                        style(&v.artists[0].name).dim()
+                    )
+                })
+                .collect();
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Choose the album")
+                .default(0)
+                .max_length(5)
+                .items(&selector)
+                .interact()
+                .unwrap();
+            let album = client
+                .fetch_metadata(&response.results.albums[selection].url)
+                .await
+                .unwrap();
+            for i in 0..album.tracks.len() {
+                download_and_save(
+                    &client,
+                    &album.tracks[i].url,
+                    &album.tracks[i].title,
+                    cli.metadata,
+                    i + 1,
+                    album.tracks.len(),
+                    true,
+                )
+                .await;
             }
-        })
-        .await
-        .unwrap();
-
-    fs::write(
-        response.filename.unwrap(),
-        response.response.bytes().await.unwrap(),
-    )
-    .await
-    .unwrap();
+        }
+    }
 }

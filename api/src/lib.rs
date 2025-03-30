@@ -62,11 +62,12 @@ pub struct Country {
 
 #[derive(Debug, Deserialize)]
 pub struct SearchResults {
-    pub tracks: Vec<Track>,
+    pub albums: Vec<MediaEntity>,
+    pub tracks: Vec<MediaEntity>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Track {
+pub struct MediaEntity {
     pub url: String,
     pub title: String,
     pub artists: Vec<Artist>,
@@ -77,10 +78,17 @@ pub struct Artist {
     pub name: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct MetadataResponse {
+    pub success: bool,
+    pub title: String,
+    pub tracks: Vec<MediaEntity>,
+}
+
 pub struct DownloadResponse {
     pub response: reqwest::Response,
     pub filename: Option<String>,
-    pub content_type: String,
+    pub content_type: Option<String>,
 }
 
 pub enum LucidaHost {
@@ -219,53 +227,55 @@ impl LucidaClient {
         &self,
         url: &str,
         metadata: bool,
-        mut event_callback: impl FnMut(String),
+        mut event_callback: impl FnMut(&str),
     ) -> Result<DownloadResponse, LucidaError> {
         let Some(service) = LucidaService::from_url(url) else {
             return Err(LucidaError::UnknownService);
         };
         let countries = self.fetch_countries(service).await?;
         for country in countries.countries {
-            for i in 0..3 {
-                event_callback(format!(
-                    "Trying country \"{}\" attempt {}",
-                    country.code,
-                    i + 1
-                ));
-
-                let stream_response = self
-                    .fetch_stream(url, Some(&country.code), metadata)
-                    .await?;
+            for _ in 0..3 {
+                let Ok(stream_response) =
+                    self.fetch_stream(url, Some(&country.code), metadata).await
+                else {
+                    continue;
+                };
                 if !stream_response.success {
-                    event_callback("Failed to rip stream".to_string());
                     continue;
                 }
 
                 let id = stream_response.handoff.unwrap();
 
-                let mut status_response = self.fetch_status(&id).await?;
+                let Ok(mut status_response) = self.fetch_status(&id).await else {
+                    continue;
+                };
+                let mut status_message = status_response.message;
+                event_callback(&status_message);
+
                 while status_response.status != "completed" && status_response.status != "error" {
-                    event_callback(status_response.message);
-                    status_response = self.fetch_status(&id).await?;
+                    status_response = if let Ok(r) = self.fetch_status(&id).await {
+                        r
+                    } else {
+                        continue;
+                    };
+                    if status_message != status_response.message {
+                        status_message = status_response.message;
+                        event_callback(&status_message);
+                    }
                     sleep(Duration::from_secs(1)).await;
                 }
-
                 if status_response.status == "error" {
-                    event_callback(format!(
-                        "Cannot fetch download: {}",
-                        status_response.message
-                    ));
                     continue;
                 }
 
-                event_callback("Downloading stream".to_string());
+                event_callback("Downloading stream locally");
 
-                return Ok(self.fetch_download(&id).await?);
+                let Ok(download_response) = self.fetch_download(&id).await else {
+                    continue;
+                };
+
+                return Ok(download_response);
             }
-            event_callback(format!(
-                "Cannot download track with \"{}\" country",
-                country.code
-            ));
         }
         Err(LucidaError::NotAvailable)
     }
@@ -334,10 +344,8 @@ impl LucidaClient {
         let headers = response.headers();
         let content_type = headers
             .get(header::CONTENT_TYPE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| Some(v.to_string()));
 
         let mut filename = None;
         if let Some(disposition) = headers.get(header::CONTENT_DISPOSITION) {
@@ -389,6 +397,22 @@ impl LucidaClient {
                 self.host.as_str()
             ))
             .query(&[("service", service.as_str())])
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn fetch_metadata(&self, url: &str) -> Result<MetadataResponse, LucidaError> {
+        let response: MetadataResponse = self
+            .client
+            .get(format!(
+                "https://{}.{}/api/fetch/metadata",
+                self.server.as_str(),
+                self.host.as_str()
+            ))
+            .query(&[("url", url)])
             .send()
             .await?
             .json()
