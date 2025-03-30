@@ -82,27 +82,34 @@ async fn download_and_save(
     total: usize,
     append_current: bool,
 ) {
-    let response = client
-        .try_download_all_countries(url, metadata, |e| {
-            println!(
-                "{} {} {} {}",
-                style("[").dim(),
-                style(format!("{current}")).bold().cyan(),
-                style(format!("/ {total} ]")).dim(),
-                style(e.replace("{item}", title)).bold()
-            )
-        })
-        .await
-        .unwrap();
+    let log = |m: &str| {
+        println!(
+            "{} {} {} {}",
+            style("[").dim(),
+            style(format!("{current}")).bold().cyan(),
+            style(format!("/ {total} ]")).dim(),
+            style(m).bold()
+        )
+    };
+    loop {
+        let Ok(response) = client
+            .try_download_all_countries(url, metadata, |e| log(&e.replace("{item}", title)))
+            .await
+        else {
+            log("Download failed, retrying...");
+            continue;
+        };
 
-    let mut filename = response.filename.unwrap().replace("/", "&");
-    if append_current {
-        filename = format!("{current}. {filename}");
+        let mut filename = response.filename.unwrap().replace("/", "&");
+        if append_current {
+            filename = format!("{current}. {filename}");
+        }
+
+        fs::write(filename, response.response.bytes().await.unwrap())
+            .await
+            .unwrap();
+        break;
     }
-
-    fs::write(filename, response.response.bytes().await.unwrap())
-        .await
-        .unwrap();
 }
 
 #[tokio::main]

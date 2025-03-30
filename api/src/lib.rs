@@ -1,3 +1,4 @@
+use chrono::Utc;
 use reqwest::header;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -209,7 +210,10 @@ pub struct LucidaClient {
 impl LucidaClient {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .read_timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
             host: LucidaHost::LucidaTo,
             server: LucidaServer::Hund,
         }
@@ -217,7 +221,10 @@ impl LucidaClient {
 
     pub fn with_options(host: LucidaHost, server: LucidaServer) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .read_timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
             host,
             server,
         }
@@ -235,32 +242,33 @@ impl LucidaClient {
         let countries = self.fetch_countries(service).await?;
         for country in countries.countries {
             for _ in 0..3 {
-                let Ok(stream_response) =
-                    self.fetch_stream(url, Some(&country.code), metadata).await
-                else {
-                    continue;
-                };
+                let stream_response = self
+                    .fetch_stream(url, Some(&country.code), metadata)
+                    .await?;
                 if !stream_response.success {
                     continue;
                 }
 
                 let id = stream_response.handoff.unwrap();
 
-                let Ok(mut status_response) = self.fetch_status(&id).await else {
-                    continue;
-                };
+                let mut status_response = self.fetch_status(&id).await?;
                 let mut status_message = status_response.message;
                 event_callback(&status_message);
 
+                let processing_start = Utc::now();
                 while status_response.status != "completed" && status_response.status != "error" {
-                    status_response = if let Ok(r) = self.fetch_status(&id).await {
-                        r
-                    } else {
-                        continue;
-                    };
+                    status_response = self.fetch_status(&id).await?;
                     if status_message != status_response.message {
                         status_message = status_response.message;
                         event_callback(&status_message);
+                    }
+                    if processing_start
+                        .signed_duration_since(Utc::now())
+                        .num_seconds()
+                        > 60
+                    {
+                        event_callback("Processing timeout, retrying...");
+                        continue;
                     }
                     sleep(Duration::from_secs(1)).await;
                 }
@@ -270,11 +278,7 @@ impl LucidaClient {
 
                 event_callback("Downloading stream locally");
 
-                let Ok(download_response) = self.fetch_download(&id).await else {
-                    continue;
-                };
-
-                return Ok(download_response);
+                return self.fetch_download(&id).await;
             }
         }
         Err(LucidaError::NotAvailable)
