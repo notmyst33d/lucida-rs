@@ -253,26 +253,29 @@ impl LucidaClient {
 
                 let mut status_response = self.fetch_status(&id).await?;
                 let mut status_message = status_response.message;
+                let mut status = status_response.status;
                 event_callback(&status_message);
 
                 let processing_start = Utc::now();
-                while status_response.status != "completed" && status_response.status != "error" {
+                while status != "completed" && status != "error" {
                     status_response = self.fetch_status(&id).await?;
+                    status = status_response.status;
                     if status_message != status_response.message {
                         status_message = status_response.message;
                         event_callback(&status_message);
                     }
-                    if processing_start
-                        .signed_duration_since(Utc::now())
+                    if Utc::now()
+                        .signed_duration_since(processing_start)
                         .num_seconds()
                         > 60
                     {
                         event_callback("Processing timeout, retrying...");
-                        continue;
+                        status = "error".to_string();
+                        break;
                     }
                     sleep(Duration::from_secs(1)).await;
                 }
-                if status_response.status == "error" {
+                if status == "error" {
                     continue;
                 }
 
