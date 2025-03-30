@@ -211,7 +211,7 @@ impl LucidaClient {
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
-                .read_timeout(Duration::from_secs(5))
+                .read_timeout(Duration::from_secs(60))
                 .build()
                 .unwrap(),
             host: LucidaHost::LucidaTo,
@@ -222,7 +222,7 @@ impl LucidaClient {
     pub fn with_options(host: LucidaHost, server: LucidaServer) -> Self {
         Self {
             client: reqwest::Client::builder()
-                .read_timeout(Duration::from_secs(5))
+                .read_timeout(Duration::from_secs(60))
                 .build()
                 .unwrap(),
             host,
