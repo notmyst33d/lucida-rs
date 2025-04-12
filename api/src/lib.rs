@@ -63,15 +63,36 @@ pub struct Country {
 
 #[derive(Debug, Deserialize)]
 pub struct SearchResults {
-    pub albums: Vec<MediaEntity>,
-    pub tracks: Vec<MediaEntity>,
+    pub albums: Vec<Album>,
+    pub tracks: Vec<Track>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct MediaEntity {
+pub struct Artwork {
+    pub url: String,
+    pub width: usize,
+    pub height: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Album {
+    pub url: String,
+    pub title: String,
+    pub artists: Option<Vec<Artist>>,
+    #[serde(alias = "coverArtwork")]
+    pub cover_artwork: Option<Vec<Artwork>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Track {
     pub url: String,
     pub title: String,
     pub artists: Vec<Artist>,
+    pub album: Album,
+    #[serde(alias = "coverArtwork")]
+    pub cover_artwork: Option<Vec<Artwork>>,
+    #[serde(alias = "durationMs")]
+    pub duration_ms: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,7 +104,7 @@ pub struct Artist {
 pub struct MetadataResponse {
     pub success: bool,
     pub title: String,
-    pub tracks: Vec<MediaEntity>,
+    pub tracks: Vec<Track>,
 }
 
 pub struct DownloadResponse {
@@ -187,8 +208,8 @@ impl std::fmt::Display for LucidaError {
         match self {
             LucidaError::UnknownService => write!(f, "unknown service"),
             LucidaError::NotAvailable => write!(f, "not available"),
-            LucidaError::RequestFailed(_) => write!(f, "request failed"),
-            LucidaError::ServerError(_) => write!(f, "server error"),
+            LucidaError::RequestFailed(e) => write!(f, "request failed: {e}"),
+            LucidaError::ServerError(e) => write!(f, "server error: {e}"),
         }
     }
 }
@@ -234,7 +255,7 @@ impl LucidaClient {
         &self,
         url: &str,
         metadata: bool,
-        mut event_callback: impl FnMut(&str),
+        mut event_callback: impl FnMut(String),
     ) -> Result<DownloadResponse, LucidaError> {
         let Some(service) = LucidaService::from_url(url) else {
             return Err(LucidaError::UnknownService);
@@ -254,7 +275,7 @@ impl LucidaClient {
                 let mut status_response = self.fetch_status(&id).await?;
                 let mut status_message = status_response.message;
                 let mut status = status_response.status;
-                event_callback(&status_message);
+                event_callback(status_message.clone());
 
                 let processing_start = Utc::now();
                 while status != "completed" && status != "error" {
@@ -262,14 +283,14 @@ impl LucidaClient {
                     status = status_response.status;
                     if status_message != status_response.message {
                         status_message = status_response.message;
-                        event_callback(&status_message);
+                        event_callback(status_message.clone());
                     }
                     if Utc::now()
                         .signed_duration_since(processing_start)
                         .num_seconds()
                         > 60
                     {
-                        event_callback("Processing timeout, retrying...");
+                        event_callback("Processing timeout, retrying...".to_string());
                         status = "error".to_string();
                         break;
                     }
@@ -279,7 +300,7 @@ impl LucidaClient {
                     continue;
                 }
 
-                event_callback("Downloading stream locally");
+                event_callback("Downloading stream locally".to_string());
 
                 return self.fetch_download(&id).await;
             }
