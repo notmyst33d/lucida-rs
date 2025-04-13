@@ -223,7 +223,7 @@ impl std::fmt::Display for LucidaError {
             LucidaError::NotAvailable => write!(f, "not available"),
             LucidaError::RequestFailed(e) => write!(f, "request failed: {e}"),
             LucidaError::ServerError(e) => write!(f, "server error: {e}"),
-            LucidaError::ChannelError(e) => write!(f, "server error: {e}"),
+            LucidaError::ChannelError(e) => write!(f, "channel error: {e}"),
         }
     }
 }
