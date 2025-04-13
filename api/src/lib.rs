@@ -2,7 +2,7 @@ use chrono::Utc;
 use reqwest::header;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tokio::time::sleep;
+use tokio::{sync::mpsc, time::sleep};
 
 #[derive(Serialize)]
 struct Account {
@@ -67,14 +67,14 @@ pub struct SearchResults {
     pub tracks: Vec<Track>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Artwork {
     pub url: String,
     pub width: usize,
     pub height: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Album {
     pub url: String,
     pub title: String,
@@ -83,7 +83,7 @@ pub struct Album {
     pub cover_artwork: Option<Vec<Artwork>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Track {
     pub url: String,
     pub title: String,
@@ -95,7 +95,19 @@ pub struct Track {
     pub duration_ms: usize,
 }
 
-#[derive(Debug, Deserialize)]
+impl Track {
+    pub fn artwork(&self) -> Option<String> {
+        if let Some(artwork) = &self.cover_artwork {
+            Some(artwork[artwork.len() - 1].url.clone())
+        } else if let Some(artwork) = &self.album.cover_artwork {
+            Some(artwork[artwork.len() - 1].url.clone())
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Artist {
     pub name: String,
 }
@@ -201,6 +213,7 @@ pub enum LucidaError {
     NotAvailable,
     RequestFailed(String),
     ServerError(String),
+    ChannelError(mpsc::error::SendError<String>),
 }
 
 impl std::fmt::Display for LucidaError {
@@ -210,6 +223,7 @@ impl std::fmt::Display for LucidaError {
             LucidaError::NotAvailable => write!(f, "not available"),
             LucidaError::RequestFailed(e) => write!(f, "request failed: {e}"),
             LucidaError::ServerError(e) => write!(f, "server error: {e}"),
+            LucidaError::ChannelError(e) => write!(f, "server error: {e}"),
         }
     }
 }
@@ -219,6 +233,12 @@ impl std::error::Error for LucidaError {}
 impl From<reqwest::Error> for LucidaError {
     fn from(value: reqwest::Error) -> Self {
         Self::RequestFailed(value.to_string())
+    }
+}
+
+impl From<mpsc::error::SendError<String>> for LucidaError {
+    fn from(value: mpsc::error::SendError<String>) -> Self {
+        Self::ChannelError(value)
     }
 }
 
@@ -255,7 +275,7 @@ impl LucidaClient {
         &self,
         url: &str,
         metadata: bool,
-        mut event_callback: impl FnMut(String),
+        tx: mpsc::Sender<String>,
     ) -> Result<DownloadResponse, LucidaError> {
         let Some(service) = LucidaService::from_url(url) else {
             return Err(LucidaError::UnknownService);
@@ -275,7 +295,7 @@ impl LucidaClient {
                 let mut status_response = self.fetch_status(&id).await?;
                 let mut status_message = status_response.message;
                 let mut status = status_response.status;
-                event_callback(status_message.clone());
+                tx.send(status_message.clone()).await?;
 
                 let processing_start = Utc::now();
                 while status != "completed" && status != "error" {
@@ -283,14 +303,15 @@ impl LucidaClient {
                     status = status_response.status;
                     if status_message != status_response.message {
                         status_message = status_response.message;
-                        event_callback(status_message.clone());
+                        tx.send(status_message.clone()).await?;
                     }
                     if Utc::now()
                         .signed_duration_since(processing_start)
                         .num_seconds()
                         > 60
                     {
-                        event_callback("Processing timeout, retrying...".to_string());
+                        tx.send("Processing timeout, retrying...".to_string())
+                            .await?;
                         status = "error".to_string();
                         break;
                     }
@@ -300,7 +321,7 @@ impl LucidaClient {
                     continue;
                 }
 
-                event_callback("Downloading stream locally".to_string());
+                tx.send("Downloading stream locally".to_string()).await?;
 
                 return self.fetch_download(&id).await;
             }
