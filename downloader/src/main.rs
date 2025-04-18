@@ -99,12 +99,12 @@ async fn download_and_save(
                 log(&message.replace("{item}", &title));
             }
         });
-        let Ok(response) = client
-            .try_download_all_countries(url, metadata, tx)
-            .await
-        else {
-            log("Download failed, retrying...");
-            continue;
+        let response = match client.try_download_all_countries(url, metadata, tx).await {
+            Ok(response) => response,
+            Err(e) => {
+                log(&format!("Download failed, retrying... ({e})"));
+                continue;
+            }
         };
 
         let mut filename = response.filename.unwrap().replace("/", "&");
@@ -154,9 +154,9 @@ async fn main() {
                 .map(|v| {
                     format!(
                         "{} {} {}",
-                        style(&v.1).bold(),
+                        style(&v.title).bold(),
                         style("-").dim(),
-                        style(&v.2[0].name).dim()
+                        style(&v.artists[0].name).dim()
                     )
                 })
                 .collect();
@@ -169,7 +169,7 @@ async fn main() {
                 .unwrap();
             download_and_save(
                 &client,
-                &response.results.tracks[selection].0,
+                &response.results.tracks[selection].url,
                 &selector[selection],
                 cli.metadata,
                 1,
@@ -207,8 +207,8 @@ async fn main() {
             for i in 0..album.tracks.len() {
                 download_and_save(
                     &client,
-                    &album.tracks[i].0,
-                    &album.tracks[i].1,
+                    &album.tracks[i].url,
+                    &album.tracks[i].title,
                     cli.metadata,
                     i + 1,
                     album.tracks.len(),

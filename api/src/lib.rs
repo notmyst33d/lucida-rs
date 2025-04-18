@@ -88,7 +88,7 @@ pub struct Track {
     pub url: String,
     pub title: String,
     pub artists: Vec<Artist>,
-    pub album: Album,
+    pub album: Option<Album>,
     #[serde(alias = "coverArtwork")]
     pub cover_artwork: Option<Vec<Artwork>>,
     #[serde(alias = "durationMs")]
@@ -99,7 +99,7 @@ impl Track {
     pub fn artwork(&self) -> Option<String> {
         if let Some(artwork) = &self.cover_artwork {
             Some(artwork[artwork.len() - 1].url.clone())
-        } else if let Some(artwork) = &self.album.cover_artwork {
+        } else if let Some(artwork) = self.album.as_ref().and_then(|a| a.cover_artwork.as_ref()) {
             Some(artwork[artwork.len() - 1].url.clone())
         } else {
             None
