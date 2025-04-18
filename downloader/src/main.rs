@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use console::style;
 use dialoguer::{Select, theme::ColorfulTheme};
 use lucida_api::{LucidaClient, LucidaHost, LucidaServer, LucidaService, SearchResponse};
-use tokio::fs;
+use tokio::{fs, sync::mpsc};
 
 #[derive(Parser)]
 struct Cli {
@@ -82,7 +82,7 @@ async fn download_and_save(
     total: usize,
     append_current: bool,
 ) {
-    let log = |m: &str| {
+    let log = move |m: &str| {
         println!(
             "{} {} {} {}",
             style("[").dim(),
@@ -92,8 +92,15 @@ async fn download_and_save(
         )
     };
     loop {
+        let title = title.to_string();
+        let (tx, mut rx) = mpsc::channel::<String>(16);
+        tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                log(&message.replace("{item}", &title));
+            }
+        });
         let Ok(response) = client
-            .try_download_all_countries(url, metadata, |e| log(&e.replace("{item}", title)))
+            .try_download_all_countries(url, metadata, tx)
             .await
         else {
             log("Download failed, retrying...");
@@ -147,9 +154,9 @@ async fn main() {
                 .map(|v| {
                     format!(
                         "{} {} {}",
-                        style(&v.title).bold(),
+                        style(&v.1).bold(),
                         style("-").dim(),
-                        style(&v.artists[0].name).dim()
+                        style(&v.2[0].name).dim()
                     )
                 })
                 .collect();
@@ -162,7 +169,7 @@ async fn main() {
                 .unwrap();
             download_and_save(
                 &client,
-                &response.results.tracks[selection].url,
+                &response.results.tracks[selection].0,
                 &selector[selection],
                 cli.metadata,
                 1,
@@ -182,7 +189,7 @@ async fn main() {
                         "{} {} {}",
                         style(&v.title).bold(),
                         style("-").dim(),
-                        style(&v.artists[0].name).dim()
+                        style(&v.artists.as_ref().unwrap()[0].name).dim()
                     )
                 })
                 .collect();
@@ -200,8 +207,8 @@ async fn main() {
             for i in 0..album.tracks.len() {
                 download_and_save(
                     &client,
-                    &album.tracks[i].url,
-                    &album.tracks[i].title,
+                    &album.tracks[i].0,
+                    &album.tracks[i].1,
                     cli.metadata,
                     i + 1,
                     album.tracks.len(),
