@@ -4,6 +4,40 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::{sync::mpsc, time::sleep};
 
+macro_rules! string_enum {
+    (pub enum $name:ident {
+        $($variant:ident = { name: $value:literal, url: $url:literal },)*
+    }) => {
+        #[derive(Clone)]
+        pub enum $name {
+            $($variant),*
+        }
+
+        impl TryFrom<&str> for $name {
+            type Error = ();
+
+            fn try_from(value: &str) -> Result<Self, Self::Error> {
+                let urls = [$((Self::$variant, $url),)*];
+                if let Some(value) = urls.into_iter().find(|u| value.contains(u.1)) {
+                    return Ok(value.0);
+                }
+                match value {
+                    $($value => Ok(Self::$variant),)*
+                    _ => Err(())
+                }
+            }
+        }
+
+        impl From<$name> for &str {
+            fn from(value: LucidaService) -> Self {
+                match value {
+                    $($name::$variant => $value,)*
+                }
+            }
+        }
+    };
+}
+
 #[derive(Serialize)]
 struct Account {
     id: String,
@@ -97,13 +131,15 @@ pub struct Track {
 
 impl Track {
     pub fn artwork(&self) -> Option<String> {
-        if let Some(artwork) = &self.cover_artwork {
-            Some(artwork[artwork.len() - 1].url.clone())
-        } else if let Some(artwork) = self.album.as_ref().and_then(|a| a.cover_artwork.as_ref()) {
-            Some(artwork[artwork.len() - 1].url.clone())
-        } else {
-            None
-        }
+        self.cover_artwork.as_ref().map_or_else(
+            || {
+                self.album
+                    .as_ref()
+                    .and_then(|a| a.cover_artwork.as_ref())
+                    .map(|artwork| artwork[artwork.len() - 1].url.clone())
+            },
+            |artwork| Some(artwork[artwork.len() - 1].url.clone()),
+        )
     }
 }
 
@@ -125,127 +161,38 @@ pub struct DownloadResponse {
     pub content_type: Option<String>,
 }
 
-pub enum LucidaHost {
-    LucidaSu,
-    LucidaTo,
-}
-
-impl LucidaHost {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LucidaHost::LucidaTo => "lucida.to",
-            LucidaHost::LucidaSu => "lucida.su",
-        }
+string_enum! {
+    pub enum LucidaService {
+        Qobuz = { name: "qobuz", url: "qobuz.com" },
+        Tidal = { name: "tidal", url: "tidal.com" },
+        Soundcloud = { name: "soundcloud", url: "soundcloud.com" },
+        Deezer = { name: "deezer", url: "deezer.com" },
+        AmazonMusic = { name: "amazon", url: "music.amazon.com" },
+        YandexMusic = { name: "yandex", url: "music.yandex.ru" },
     }
 }
 
-#[derive(PartialEq)]
-pub enum LucidaServer {
-    Hund,
-    Katze,
-}
+#[derive(Debug, thiserror::Error)]
+pub enum TryDownloadAllCountriesError {
+    #[error(transparent)]
+    RequestError(#[from] reqwest::Error),
 
-#[derive(Clone)]
-pub enum LucidaService {
-    Qobuz,
-    Tidal,
-    Soundcloud,
-    Deezer,
-    AmazonMusic,
-    YandexMusic,
-}
-
-impl LucidaService {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LucidaService::Qobuz => "qobuz",
-            LucidaService::Tidal => "tidal",
-            LucidaService::Soundcloud => "soundcloud",
-            LucidaService::Deezer => "deezer",
-            LucidaService::AmazonMusic => "amazon",
-            LucidaService::YandexMusic => "yandex",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Option<LucidaService> {
-        match s {
-            "qobuz" => Some(LucidaService::Qobuz),
-            "tidal" => Some(LucidaService::Tidal),
-            "soundcloud" => Some(LucidaService::Soundcloud),
-            "deezer" => Some(LucidaService::Deezer),
-            "amazon" => Some(LucidaService::AmazonMusic),
-            "yandex" => Some(LucidaService::YandexMusic),
-            _ => None,
-        }
-    }
-
-    pub fn from_url(url: &str) -> Option<LucidaService> {
-        if url.contains("qobuz.com") {
-            Some(LucidaService::Qobuz)
-        } else if url.contains("tidal.com") {
-            Some(LucidaService::Tidal)
-        } else if url.contains("soundcloud.com") {
-            Some(LucidaService::Soundcloud)
-        } else if url.contains("deezer.com") {
-            Some(LucidaService::Deezer)
-        } else if url.contains("music.amazon.com") {
-            Some(LucidaService::AmazonMusic)
-        } else if url.contains("music.yandex.ru") {
-            Some(LucidaService::YandexMusic)
-        } else {
-            None
-        }
-    }
-}
-
-impl LucidaServer {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LucidaServer::Hund => "hund",
-            LucidaServer::Katze => "katze",
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum LucidaError {
+    #[error("unknown service")]
     UnknownService,
-    NotAvailable,
-    RequestFailed(String),
-    ServerError(String),
-    ChannelError(mpsc::error::SendError<String>),
-}
 
-impl std::fmt::Display for LucidaError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LucidaError::UnknownService => write!(f, "unknown service"),
-            LucidaError::NotAvailable => write!(f, "not available"),
-            LucidaError::RequestFailed(e) => write!(f, "request failed: {e}"),
-            LucidaError::ServerError(e) => write!(f, "server error: {e}"),
-            LucidaError::ChannelError(e) => write!(f, "channel error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for LucidaError {}
-
-impl From<reqwest::Error> for LucidaError {
-    fn from(value: reqwest::Error) -> Self {
-        Self::RequestFailed(value.to_string())
-    }
-}
-
-impl From<mpsc::error::SendError<String>> for LucidaError {
-    fn from(value: mpsc::error::SendError<String>) -> Self {
-        Self::ChannelError(value)
-    }
+    #[error("no available countries")]
+    NoAvailableCountries,
 }
 
 pub struct LucidaClient {
     client: reqwest::Client,
-    host: LucidaHost,
-    server: LucidaServer,
+    base_url: String,
+}
+
+impl Default for LucidaClient {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LucidaClient {
@@ -255,20 +202,13 @@ impl LucidaClient {
                 .read_timeout(Duration::from_secs(60))
                 .build()
                 .unwrap(),
-            host: LucidaHost::LucidaTo,
-            server: LucidaServer::Hund,
+            base_url: "https://katze.lucida.to".to_string(),
         }
     }
 
-    pub fn with_options(host: LucidaHost, server: LucidaServer) -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .read_timeout(Duration::from_secs(60))
-                .build()
-                .unwrap(),
-            host,
-            server,
-        }
+    pub fn with_base_url(mut self, base_url: String) -> Self {
+        self.base_url = base_url;
+        self
     }
 
     pub async fn try_download_all_countries(
@@ -276,9 +216,9 @@ impl LucidaClient {
         url: &str,
         metadata: bool,
         tx: mpsc::Sender<String>,
-    ) -> Result<DownloadResponse, LucidaError> {
-        let Some(service) = LucidaService::from_url(url) else {
-            return Err(LucidaError::UnknownService);
+    ) -> Result<DownloadResponse, TryDownloadAllCountriesError> {
+        let Ok(service) = LucidaService::try_from(url) else {
+            return Err(TryDownloadAllCountriesError::UnknownService);
         };
         let countries = self.fetch_countries(service).await?;
         for country in countries.countries {
@@ -295,7 +235,7 @@ impl LucidaClient {
                 let mut status_response = self.fetch_status(&id).await?;
                 let mut status_message = status_response.message;
                 let mut status = status_response.status;
-                tx.send(status_message.clone()).await?;
+                tx.send(status_message.clone()).await.unwrap();
 
                 let processing_start = Utc::now();
                 while status != "completed" && status != "error" {
@@ -303,7 +243,7 @@ impl LucidaClient {
                     status = status_response.status;
                     if status_message != status_response.message {
                         status_message = status_response.message;
-                        tx.send(status_message.clone()).await?;
+                        tx.send(status_message.clone()).await.unwrap();
                     }
                     if Utc::now()
                         .signed_duration_since(processing_start)
@@ -311,7 +251,8 @@ impl LucidaClient {
                         > 60
                     {
                         tx.send("Processing timeout, retrying...".to_string())
-                            .await?;
+                            .await
+                            .unwrap();
                         status = "error".to_string();
                         break;
                     }
@@ -321,12 +262,14 @@ impl LucidaClient {
                     continue;
                 }
 
-                tx.send("Downloading stream locally".to_string()).await?;
+                tx.send("Downloading stream locally".to_string())
+                    .await
+                    .unwrap();
 
-                return self.fetch_download(&id).await;
+                return Ok(self.fetch_download(&id).await?);
             }
         }
-        Err(LucidaError::NotAvailable)
+        Err(TryDownloadAllCountriesError::NoAvailableCountries)
     }
 
     pub async fn fetch_stream(
@@ -334,14 +277,9 @@ impl LucidaClient {
         url: &str,
         country: Option<&str>,
         metadata: bool,
-    ) -> Result<StreamResponse, LucidaError> {
-        let response: StreamResponse = self
-            .client
-            .post(format!(
-                "https://{}.{}/api/fetch/stream/v2",
-                self.server.as_str(),
-                self.host.as_str()
-            ))
+    ) -> Result<StreamResponse, reqwest::Error> {
+        self.client
+            .post(format!("{}/api/fetch/stream/v2", self.base_url))
             .json(&StreamRequest {
                 account: Account {
                     id: country.unwrap_or("auto").to_string(),
@@ -360,33 +298,22 @@ impl LucidaClient {
             .send()
             .await?
             .json()
-            .await?;
-        Ok(response)
+            .await
     }
 
-    pub async fn fetch_status(&self, id: &str) -> Result<StatusResponse, LucidaError> {
-        let response: StatusResponse = self
-            .client
-            .get(format!(
-                "https://{}.{}/api/fetch/request/{id}",
-                self.server.as_str(),
-                self.host.as_str()
-            ))
+    pub async fn fetch_status(&self, id: &str) -> Result<StatusResponse, reqwest::Error> {
+        self.client
+            .get(format!("{}/api/fetch/request/{id}", self.base_url))
             .send()
             .await?
             .json()
-            .await?;
-        Ok(response)
+            .await
     }
 
-    pub async fn fetch_download(&self, id: &str) -> Result<DownloadResponse, LucidaError> {
+    pub async fn fetch_download(&self, id: &str) -> Result<DownloadResponse, reqwest::Error> {
         let response = self
             .client
-            .get(format!(
-                "https://{}.{}/api/fetch/request/{id}/download",
-                self.server.as_str(),
-                self.host.as_str()
-            ))
+            .get(format!("{}/api/fetch/request/{id}/download", self.base_url))
             .send()
             .await?;
 
@@ -394,7 +321,7 @@ impl LucidaClient {
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| Some(v.to_string()));
+            .map(|v| v.to_string());
 
         let mut filename = None;
         if let Some(disposition) = headers.get(header::CONTENT_DISPOSITION) {
@@ -414,58 +341,40 @@ impl LucidaClient {
         service: LucidaService,
         country: &str,
         query: &str,
-    ) -> Result<SearchResponse, LucidaError> {
-        let response: SearchResponse = self
-            .client
-            .get(format!(
-                "https://{}.{}/api/search",
-                self.server.as_str(),
-                self.host.as_str()
-            ))
+    ) -> Result<SearchResponse, reqwest::Error> {
+        self.client
+            .get(format!("{}/api/search", self.base_url))
             .query(&[
                 ("query", query),
-                ("service", service.as_str()),
+                ("service", service.into()),
                 ("country", country),
             ])
             .send()
             .await?
             .json()
-            .await?;
-        Ok(response)
+            .await
     }
 
     pub async fn fetch_countries(
         &self,
         service: LucidaService,
-    ) -> Result<CountriesResponse, LucidaError> {
-        let response: CountriesResponse = self
-            .client
-            .get(format!(
-                "https://{}.{}/api/countries",
-                self.server.as_str(),
-                self.host.as_str()
-            ))
-            .query(&[("service", service.as_str())])
+    ) -> Result<CountriesResponse, reqwest::Error> {
+        self.client
+            .get(format!("{}/api/countries", self.base_url))
+            .query(&[("service", Into::<&str>::into(service))])
             .send()
             .await?
             .json()
-            .await?;
-        Ok(response)
+            .await
     }
 
-    pub async fn fetch_metadata(&self, url: &str) -> Result<MetadataResponse, LucidaError> {
-        let response: MetadataResponse = self
-            .client
-            .get(format!(
-                "https://{}.{}/api/fetch/metadata",
-                self.server.as_str(),
-                self.host.as_str()
-            ))
+    pub async fn fetch_metadata(&self, url: &str) -> Result<MetadataResponse, reqwest::Error> {
+        self.client
+            .get(format!("{}/api/fetch/metadata", self.base_url))
             .query(&[("url", url)])
             .send()
             .await?
             .json()
-            .await?;
-        Ok(response)
+            .await
     }
 }
